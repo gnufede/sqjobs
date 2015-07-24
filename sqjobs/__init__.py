@@ -25,3 +25,19 @@ def create_sqs_worker(queue_name, access_key, secret_key, region='us-west-1', is
     worker = Worker(broker, queue_name)
 
     return worker
+
+def create_redis_broker(redis_server_url, eager=False):
+    from .connectors.redispubsub import RedisPubSub
+    from .broker import Broker
+
+    redis_conn = RedisPubSub(url=redis_server_url)
+    broker = Broker(redis_conn, eager)
+    return broker
+
+def create_redis_worker(queue_name, redis_server_url, eager=False):
+    from .worker import Worker
+
+    broker = create_redis_broker(redis_server_url)
+    worker = Worker(broker, queue_name)
+
+    return worker

@@ -1,5 +1,8 @@
-import redis
+from redis import StrictRedis
+import time
+from datetime import datetime
 
+import json
 from .base import Connector
 
 import logging
@@ -19,6 +22,7 @@ class RedisPubSub(Connector):
         """
         self.server_url = url
         self.subscription = None
+        self._redis_client = None
 
     def __repr__(self):
         return 'RedisPubSub("{url}")'.format(
@@ -31,7 +35,8 @@ class RedisPubSub(Connector):
         Creates (and saves in a cache) a Redis PubSub client connection
         """
         if self._redis_client is None:
-            self._redis_client = redis.StrictRedis.from_url(self.server_url).pubsub(ignore_subscribe_messages=True)
+            self._redis_client = StrictRedis.from_url(self.server_url)
+            self._redis_client.this_pubsub = self._redis_client.pubsub(ignore_subscribe_messages=True)
 
             logger.debug('Created new Redis connection')
 
@@ -40,8 +45,8 @@ class RedisPubSub(Connector):
     def ensure_subscription(self, queue_name):
         if not self.subscription or self.subscription != queue_name:
             if self.subscription:
-                self._redis_client.unsubscribe(self.subscription)
-            self._redis_client.subscribe(queue_name)
+                self.connection.this_pubsub.unsubscribe(self.subscription)
+            self.connection.this_pubsub.subscribe(queue_name)
 
     def get_queue(self, name):
         self.ensure_subscription(name)
@@ -61,12 +66,17 @@ class RedisPubSub(Connector):
         """
         self.ensure_subscription(queue_name)
 
-        message_id = time.now()
-        message = {'id': message_id, 'payload': payload}
-        self._redis_client.publish(queue_name, payload)
+        message_id = str(time.time())
+        message = {
+            'id': message_id,
+            'payload': payload,
+            'created_on': str(time.time()),
+            'first_execution_on': str(time.time()),
+        }
+        StrictRedis.publish(self.connection, queue_name, json.dumps(message))
 
         logger.info('Sent new message to %s', queue_name)
-        return message_id
+        return message
 
     def dequeue(self, queue_name, wait_time=20):
         """
@@ -80,10 +90,18 @@ class RedisPubSub(Connector):
         self.ensure_subscription(queue_name)
 
         while True:
-            message = self._redis_client.get_message()
+            message = self.connection.this_pubsub.get_message()
 
             if message:
-                return message['data']['payload']
+                data = json.loads(message['data'])
+                payload = json.loads(message['data'])['payload']
+                payload['_metadata'] = {
+                    'id': data['id'],
+                    'retries': 0,
+                    'created_on': datetime.fromtimestamp(float(data['created_on'])/1000),
+                    'first_execution_on': datetime.fromtimestamp(float(data['first_execution_on'])/1000),
+                }
+                return payload
 
             if wait_time:
                 time.sleep(wait_time)
@@ -95,6 +113,6 @@ class RedisPubSub(Connector):
         return None
 
     # TODO
-    def delete(self, queue_name, message_id, delay):
+    def delete(self, queue_name, message_id):
         return None
 
